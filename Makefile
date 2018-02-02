@@ -127,7 +127,7 @@ push: .push-$(ARCH)
 
 .PHONY: clean
 clean:
-	$(DOCKER) rmi -f $(MULTI_ARCH_IMG):$(TAG) || true
+	$(DOCKER) rmi -f $(IMAGE):$(TAG) || true
 
 .PHONE: code-generator
 code-generator:
