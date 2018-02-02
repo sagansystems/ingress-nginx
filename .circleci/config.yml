@@ -27,6 +27,9 @@ jobs:
           name: Build compatible go binaries
           command: echo 'export CGO_ENABLED=0' >> $BASH_ENV
       - run:
+          name: Install dependencies
+          command: go get -u github.com/golang/dep
+      - run:
           name: Update dependencies
           command: |
             dep ensure
