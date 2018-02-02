@@ -22,9 +22,9 @@ BUILDTAGS=
 
 # Use the 0.0 tag for testing, it shouldn't clobber any release builds
 TAG?=0.10.2
-REGISTRY?=quay.io/kubernetes-ingress-controller
+REGISTRY=sagan
 GOOS?=linux
-DOCKER?=gcloud docker --
+DOCKER=docker
 SED_I?=sed -i
 GOHOSTOS ?= $(shell go env GOHOSTOS)
 

@@ -37,17 +37,12 @@ jobs:
           command: |
             cd images/nginx
             make container
-          environment:
-            DOCKER: docker
-            REGISTRY: sagan
       - run:
           name: Build and push the ingress-nginx container
           command: make build && make container && make push
           environment:
             # ensure linux binaries are compatible
             CGO_ENABLED: 0
-            DOCKER: docker
-            REGISTRY: sagan
 
 workflows:
   version: 2
