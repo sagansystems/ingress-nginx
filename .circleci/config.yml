@@ -19,7 +19,7 @@ jobs:
     working_directory: *working_directory
     steps:
       - setup_remote_docker:
-          reusable: true
+          docker_layer_caching: true
       - checkout
       - *download_build_harness
       - run: make docker:login circle:cleanup-docker
