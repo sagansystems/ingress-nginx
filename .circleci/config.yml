@@ -28,7 +28,7 @@ jobs:
           command: echo 'export CGO_ENABLED=0' >> $BASH_ENV
       - run:
           name: Install dependencies
-          command: sudo go get -u github.com/golang/dep
+          command: go get github.com/golang/dep/cmd/dep
       - run:
           name: Update dependencies
           command: |
