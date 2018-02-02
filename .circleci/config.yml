@@ -7,7 +7,7 @@ references:
         command: curl --retry 5 --retry-delay 1 https://raw.githubusercontent.com/sagansystems/build-harness/master/bin/circleci.sh | bash -x -s
 
   go_base_container: &go_base_container
-    circleci/golang:1.10
+    circleci/golang:1.9
 
   working_directory: &working_directory
     /go/src/github.com/sagansystems/io.k8s.ingress-nginx/src/k8s.io/ingress-nginx
