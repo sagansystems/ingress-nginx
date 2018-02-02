@@ -1,0 +1,56 @@
+version: 2
+
+references:
+  download_build_harness: &download_build_harness
+    run:
+        name: Download build-harness
+        command: curl --retry 5 --retry-delay 1 https://raw.githubusercontent.com/sagansystems/build-harness/master/bin/circleci.sh | bash -x -s
+
+  go_base_container: &go_base_container
+    circleci/golang:1.9
+
+  working_directory: &working_directory
+    /go/src/github.com/sagansystems/io.k8s.ingress-nginx/src/k8s.io/ingress-nginx
+
+jobs:
+  build:
+    docker:
+      - image: *go_base_container
+    working_directory: *working_directory
+    steps:
+      - setup_remote_docker:
+          reusable: true
+      - checkout
+      - *download_build_harness
+      - run: make -f Makefile.circle deps
+      - run: make docker:login circle:cleanup-docker
+      - run:
+          name: Build compatible go binaries
+          command: echo 'export CGO_ENABLED=0' >> $BASH_ENV
+      - run:
+          name: Update dependencies
+          command: |
+            dep ensure
+            dep ensure -update
+            dep prune
+      - run:
+          name: Push nginx
+          command: |
+            cd images/nginx
+            make push
+      - run:
+          name: Build
+          command: make build && make container && make push
+
+workflows:
+  version: 2
+  build-and-deploy:
+    jobs:
+      - build
+
+experimental:
+  notify:
+    branches:
+      only:
+        - /master/
+        - /release.*/
