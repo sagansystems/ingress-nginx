@@ -33,15 +33,15 @@ jobs:
             dep ensure -update
             dep prune
       - run:
-          name: Push nginx
+          name: build nginx container locally
           command: |
             cd images/nginx
-            make push
+            make container
           environment:
             DOCKER: docker
             REGISTRY: sagan
       - run:
-          name: Build
+          name: Build and push the ingress-nginx container
           command: make build && make container && make push
           environment:
             # ensure linux binaries are compatible
