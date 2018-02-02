@@ -39,7 +39,11 @@ jobs:
             make container
       - run:
           name: Build and push the ingress-nginx container
-          command: make build && make container && make push
+          command: |
+            make build && make container
+            if [[ "${CIRCLE_BRANCH}" == "master" ]]; then
+              make push
+            fi
           environment:
             # ensure linux binaries are compatible
             CGO_ENABLED: 0
