@@ -49,8 +49,7 @@ IMGNAME = nginx-ingress-controller
 IMAGE = $(REGISTRY)/$(IMGNAME)
 MULTI_ARCH_IMG = $(IMAGE)-$(ARCH)
 
-# Set default base image dynamically for each arch
-BASEIMAGE?=quay.io/kubernetes-ingress-controller/nginx-$(ARCH):0.32
+BASEIMAGE=sagan/gladly-nginx:0.32
 
 ifeq ($(ARCH),arm)
 	QEMUARCH=arm
@@ -124,10 +123,7 @@ push: .push-$(ARCH)
 
 .PHONY: .push-$(ARCH)
 .push-$(ARCH):
-	$(DOCKER) push $(MULTI_ARCH_IMG):$(TAG)
-ifeq ($(ARCH), amd64)
 	$(DOCKER) push $(IMAGE):$(TAG)
-endif
 
 .PHONY: clean
 clean:
