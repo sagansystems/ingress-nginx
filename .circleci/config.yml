@@ -24,11 +24,8 @@ jobs:
       - *download_build_harness
       - run: make docker:login circle:cleanup-docker
       - run:
-          name: Build compatible go binaries
-          command: echo 'export CGO_ENABLED=0' >> $BASH_ENV
-      - run:
           name: Install dependencies
-          command: go get github.com/golang/dep/cmd/dep
+          command: go get -u github.com/golang/dep
       - run:
           name: Update dependencies
           command: |
@@ -43,6 +40,9 @@ jobs:
       - run:
           name: Build
           command: make build && make container && make push
+          environment:
+            # ensure linux binaries are compatible
+            CGO_ENABLED: 0
 
 workflows:
   version: 2
