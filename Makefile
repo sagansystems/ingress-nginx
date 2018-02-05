@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+export BUILD_HARNESS_PATH ?= $(shell until [ -d "build-harness" ] || [ "`pwd`" == '/' ]; do cd ..; done; pwd)/build-harness/
+include $(BUILD_HARNESS_PATH)/Makefile.shim
+
 .PHONY: all
 all: all-container
 
@@ -19,9 +22,9 @@ BUILDTAGS=
 
 # Use the 0.0 tag for testing, it shouldn't clobber any release builds
 TAG?=0.15.0
-REGISTRY?=quay.io/kubernetes-ingress-controller
+REGISTRY=sagan
 GOOS?=linux
-DOCKER?=docker
+DOCKER=docker
 SED_I?=sed -i
 GOHOSTOS ?= $(shell go env GOHOSTOS)
 
@@ -51,8 +54,7 @@ IMGNAME = nginx-ingress-controller
 IMAGE = $(REGISTRY)/$(IMGNAME)
 MULTI_ARCH_IMG = $(IMAGE)-$(ARCH)
 
-# Set default base image dynamically for each arch
-BASEIMAGE?=quay.io/kubernetes-ingress-controller/nginx-$(ARCH):0.45
+BASEIMAGE=sagan/gladly-nginx:0.45
 
 ifeq ($(ARCH),arm)
 	QEMUARCH=arm
@@ -126,14 +128,11 @@ push: .push-$(ARCH)
 
 .PHONY: .push-$(ARCH)
 .push-$(ARCH):
-	$(DOCKER) push $(MULTI_ARCH_IMG):$(TAG)
-ifeq ($(ARCH), amd64)
 	$(DOCKER) push $(IMAGE):$(TAG)
-endif
 
 .PHONY: clean
 clean:
-	$(DOCKER) rmi -f $(MULTI_ARCH_IMG):$(TAG) || true
+	$(DOCKER) rmi -f $(IMAGE):$(TAG) || true
 
 .PHONE: code-generator
 code-generator:
