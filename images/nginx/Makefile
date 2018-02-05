@@ -16,7 +16,7 @@
 TAG ?= 0.45
 REGISTRY ?= quay.io/kubernetes-ingress-controller
 ARCH ?= $(shell go env GOARCH)
-DOCKER ?= docker
+DOCKER = docker
 
 ALL_ARCH = amd64 arm arm64 ppc64le s390x
 SED_I?=sed -i
@@ -28,7 +28,7 @@ endif
 
 QEMUVERSION=v2.9.1-1
 
-IMGNAME = nginx
+IMGNAME = gladly-nginx
 IMAGE = $(REGISTRY)/$(IMGNAME)
 MULTI_ARCH_IMG = $(IMAGE)-$(ARCH)
 
@@ -67,7 +67,7 @@ all-push: $(addprefix sub-push-,$(ALL_ARCH))
 
 container: .container-$(ARCH)
 .container-$(ARCH):
-	cp ./* $(TEMP_DIR)
+	cp -R ./* $(TEMP_DIR)
 	cd $(TEMP_DIR) && $(SED_I) 's|BASEIMAGE|$(BASEIMAGE)|g' Dockerfile
 	cd $(TEMP_DIR) && $(SED_I) "s|ARCH|$(QEMUARCH)|g" Dockerfile
 
@@ -91,10 +91,7 @@ endif
 
 push: .push-$(ARCH)
 .push-$(ARCH): .container-$(ARCH)
-	$(DOCKER) push $(MULTI_ARCH_IMG):$(TAG)
-ifeq ($(ARCH), amd64)
 	$(DOCKER) push $(IMAGE):$(TAG)
-endif
 
 clean: $(addprefix sub-clean-,$(ALL_ARCH))
 sub-clean-%:

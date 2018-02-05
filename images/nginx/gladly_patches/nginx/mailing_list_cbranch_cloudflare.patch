@@ -1,0 +1,179 @@
+# HG changeset patch
+# User Chris Branch <cbranch at cloudflare.com>
+# Date 1516111627 0
+#      Tue Jan 16 14:07:07 2018 +0000
+# Node ID 5cd4799781372a9d405b3d8e62f39ca3c76720c6
+# Parent  93abb5a855d6534f0356882f45be49f8c6a95a8b
+Added the $proxy_protocol_server_{addr,port} variables.
+
+diff -r 93abb5a855d6 -r 5cd479978137 src/core/ngx_connection.h
+--- a/src/core/ngx_connection.h	Thu Jan 11 21:43:49 2018 +0300
++++ b/src/core/ngx_connection.h	Tue Jan 16 14:07:07 2018 +0000
+@@ -146,6 +146,8 @@
+ 
+     ngx_str_t           proxy_protocol_addr;
+     in_port_t           proxy_protocol_port;
++    ngx_str_t           proxy_protocol_server_addr;
++    in_port_t           proxy_protocol_server_port;
+ 
+ #if (NGX_SSL || NGX_COMPAT)
+     ngx_ssl_connection_t  *ssl;
+diff -r 93abb5a855d6 -r 5cd479978137 src/core/ngx_proxy_protocol.c
+--- a/src/core/ngx_proxy_protocol.c	Thu Jan 11 21:43:49 2018 +0300
++++ b/src/core/ngx_proxy_protocol.c	Tue Jan 16 14:07:07 2018 +0000
+@@ -40,6 +40,7 @@
+     }
+ 
+     p += 5;
++    /* copy source address */
+     addr = p;
+ 
+     for ( ;; ) {
+@@ -72,16 +73,40 @@
+     ngx_memcpy(c->proxy_protocol_addr.data, addr, len);
+     c->proxy_protocol_addr.len = len;
+ 
++    /* copy destination address */
++    addr = p;
++
+     for ( ;; ) {
+         if (p == last) {
+             goto invalid;
+         }
+ 
+-        if (*p++ == ' ') {
++        ch = *p++;
++
++        if (ch == ' ') {
+             break;
+         }
++
++        if (ch != ':' && ch != '.'
++            && (ch < 'a' || ch > 'f')
++            && (ch < 'A' || ch > 'F')
++            && (ch < '0' || ch > '9'))
++        {
++            goto invalid;
++        }
+     }
+ 
++    len = p - addr - 1;
++    c->proxy_protocol_server_addr.data = ngx_pnalloc(c->pool, len);
++
++    if (c->proxy_protocol_server_addr.data == NULL) {
++        return NULL;
++    }
++
++    ngx_memcpy(c->proxy_protocol_server_addr.data, addr, len);
++    c->proxy_protocol_server_addr.len = len;
++
++    /* parse source port */
+     port = p;
+ 
+     for ( ;; ) {
+@@ -104,6 +129,31 @@
+ 
+     c->proxy_protocol_port = (in_port_t) n;
+ 
++    /* parse destination port */
++    port = p;
++
++    for ( ;; ) {
++        if (p == last) {
++            goto invalid;
++        }
++
++        if (*p++ == CR) {
++            break;
++        }
++    }
++
++    /* p now points to LF; step back to allow the skip loop to terminate */
++    p--;
++    len = p - port;
++
++    n = ngx_atoi(port, len);
++
++    if (n < 0 || n > 65535) {
++        goto invalid;
++    }
++
++    c->proxy_protocol_server_port = (in_port_t) n;
++
+     ngx_log_debug2(NGX_LOG_DEBUG_CORE, c->log, 0,
+                    "PROXY protocol address: %V %i", &c->proxy_protocol_addr, n);
+ 
+diff -r 93abb5a855d6 -r 5cd479978137 src/http/ngx_http_variables.c
+--- a/src/http/ngx_http_variables.c	Thu Jan 11 21:43:49 2018 +0300
++++ b/src/http/ngx_http_variables.c	Tue Jan 16 14:07:07 2018 +0000
+@@ -65,6 +65,10 @@
+     ngx_http_variable_value_t *v, uintptr_t data);
+ static ngx_int_t ngx_http_variable_proxy_protocol_port(ngx_http_request_t *r,
+     ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_variable_proxy_protocol_server_addr(
++    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_variable_proxy_protocol_server_port(
++    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+ static ngx_int_t ngx_http_variable_server_addr(ngx_http_request_t *r,
+     ngx_http_variable_value_t *v, uintptr_t data);
+ static ngx_int_t ngx_http_variable_server_port(ngx_http_request_t *r,
+@@ -204,6 +208,12 @@
+     { ngx_string("proxy_protocol_port"), NULL,
+       ngx_http_variable_proxy_protocol_port, 0, 0, 0 },
+ 
++    { ngx_string("proxy_protocol_server_addr"), NULL,
++      ngx_http_variable_proxy_protocol_server_addr, 0, 0, 0 },
++
++    { ngx_string("proxy_protocol_server_port"), NULL,
++      ngx_http_variable_proxy_protocol_server_port, 0, 0, 0 },
++
+     { ngx_string("server_addr"), NULL, ngx_http_variable_server_addr, 0, 0, 0 },
+ 
+     { ngx_string("server_port"), NULL, ngx_http_variable_server_port, 0, 0, 0 },
+@@ -1349,6 +1359,46 @@
+ 
+ 
+ static ngx_int_t
++ngx_http_variable_proxy_protocol_server_addr(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    v->len = r->connection->proxy_protocol_server_addr.len;
++    v->valid = 1;
++    v->no_cacheable = 0;
++    v->not_found = 0;
++    v->data = r->connection->proxy_protocol_server_addr.data;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_variable_proxy_protocol_server_port(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    ngx_uint_t  port;
++
++    v->len = 0;
++    v->valid = 1;
++    v->no_cacheable = 0;
++    v->not_found = 0;
++
++    v->data = ngx_pnalloc(r->pool, sizeof("65535") - 1);
++    if (v->data == NULL) {
++        return NGX_ERROR;
++    }
++
++    port = r->connection->proxy_protocol_server_port;
++
++    if (port > 0 && port < 65536) {
++        v->len = ngx_sprintf(v->data, "%ui", port) - v->data;
++    }
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
+ ngx_http_variable_server_addr(ngx_http_request_t *r,
+     ngx_http_variable_value_t *v, uintptr_t data)
+ {

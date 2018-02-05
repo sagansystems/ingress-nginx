@@ -345,6 +345,13 @@ Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTE
 # build nginx
 cd "$BUILD_PATH/nginx-$NGINX_VERSION"
 
+echo "Applying nginx patches..."
+# nginx mailing list patch to expose $proxy_protocol_server_port
+# http://mailman.nginx.org/pipermail/nginx-devel/2018-January/010761.html
+patch -p1 < /gladly_patches/nginx/mailing_list_cbranch_cloudflare.patch
+
+
+
 WITH_FLAGS="--with-debug \
   --with-pcre-jit \
   --with-http_ssl_module \
