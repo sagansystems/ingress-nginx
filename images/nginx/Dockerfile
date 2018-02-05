@@ -18,6 +18,7 @@ FROM BASEIMAGE
 CROSS_BUILD_COPY qemu-ARCH-static /usr/bin/
 
 COPY build.sh /
+COPY gladly_patches/ /gladly_patches
 
 RUN clean-install bash
 

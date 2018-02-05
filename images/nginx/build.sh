@@ -203,6 +203,12 @@ cd "$BUILD_PATH/nginx-$NGINX_VERSION"
 echo "Applying nginx patches..."
 patch -p1 < $BUILD_PATH/nginx__dynamic_tls_records.patch
 
+# nginx mailing list patch to expose $proxy_protocol_server_port
+# http://mailman.nginx.org/pipermail/nginx-devel/2018-January/010761.html
+patch -p1 < /gladly_patches/nginx/mailing_list_cbranch_cloudflare.patch
+
+
+
 WITH_FLAGS="--with-debug \
   --with-pcre-jit \
   --with-http_ssl_module \
