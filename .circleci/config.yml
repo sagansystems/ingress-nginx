@@ -47,13 +47,14 @@ jobs:
           environment:
             # ensure linux binaries are compatible
             CGO_ENABLED: 0
-
 workflows:
   version: 2
-  build-and-deploy:
+  build-n-deploy:
     jobs:
-      - build
-
+      - build:
+          filters:
+            tags:
+              ignore: /master-docker-latest/
 experimental:
   notify:
     branches:
