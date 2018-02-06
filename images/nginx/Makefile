@@ -13,8 +13,13 @@
 # limitations under the License.
 
 # 0.0.0 shouldn't clobber any released builds
+<<<<<<< HEAD
 TAG ?= 0.45
 REGISTRY ?= quay.io/kubernetes-ingress-controller
+=======
+TAG ?= 0.32
+REGISTRY = sagan
+>>>>>>> don't use dynamic registry for images/nginx
 ARCH ?= $(shell go env GOARCH)
 DOCKER = docker
 
