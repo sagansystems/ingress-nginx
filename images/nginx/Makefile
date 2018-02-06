@@ -14,7 +14,7 @@
 
 # 0.0.0 shouldn't clobber any released builds
 TAG ?= 0.32
-REGISTRY ?= quay.io/kubernetes-ingress-controller
+REGISTRY = sagan
 ARCH ?= $(shell go env GOARCH)
 DOCKER = docker
 
