@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package setting
+package settings
 
 import (
 	"strings"
@@ -38,58 +38,32 @@ var _ = framework.IngressNginxDescribe("Server Tokens", func() {
 	})
 
 	AfterEach(func() {
-		updateConfigmap(serverTokens, "false", f.KubeClientSet)
 	})
 
 	It("should not exists Server header in the response", func() {
-		updateConfigmap(serverTokens, "false", f.KubeClientSet)
+		err := f.UpdateNginxConfigMapData(serverTokens, "false")
+		Expect(err).NotTo(HaveOccurred())
 
-		ing, err := f.EnsureIngress(&v1beta1.Ingress{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        serverTokens,
-				Namespace:   f.Namespace.Name,
-				Annotations: map[string]string{},
-			},
-			Spec: v1beta1.IngressSpec{
-				Rules: []v1beta1.IngressRule{
-					{
-						Host: serverTokens,
-						IngressRuleValue: v1beta1.IngressRuleValue{
-							HTTP: &v1beta1.HTTPIngressRuleValue{
-								Paths: []v1beta1.HTTPIngressPath{
-									{
-										Path: "/",
-										Backend: v1beta1.IngressBackend{
-											ServiceName: "http-svc",
-											ServicePort: intstr.FromInt(80),
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		})
-
+		ing, err := f.EnsureIngress(framework.NewSingleIngress(serverTokens, "/", serverTokens, f.IngressController.Namespace, "http-svc", 80, nil))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ing).NotTo(BeNil())
 
 		err = f.WaitForNginxConfiguration(
-			func(server string) bool {
-				return strings.Contains(server, "server_tokens off") &&
-					strings.Contains(server, "more_set_headers \"Server: \"")
+			func(cfg string) bool {
+				return strings.Contains(cfg, "server_tokens off") &&
+					strings.Contains(cfg, "more_set_headers \"Server: \"")
 			})
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should exists Server header in the response when is enabled", func() {
-		updateConfigmap(serverTokens, "true", f.KubeClientSet)
+		err := f.UpdateNginxConfigMapData(serverTokens, "true")
+		Expect(err).NotTo(HaveOccurred())
 
 		ing, err := f.EnsureIngress(&v1beta1.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        serverTokens,
-				Namespace:   f.Namespace.Name,
+				Namespace:   f.IngressController.Namespace,
 				Annotations: map[string]string{},
 			},
 			Spec: v1beta1.IngressSpec{
@@ -118,8 +92,8 @@ var _ = framework.IngressNginxDescribe("Server Tokens", func() {
 		Expect(ing).NotTo(BeNil())
 
 		err = f.WaitForNginxConfiguration(
-			func(server string) bool {
-				return strings.Contains(server, "server_tokens on")
+			func(cfg string) bool {
+				return strings.Contains(cfg, "server_tokens on")
 			})
 		Expect(err).NotTo(HaveOccurred())
 	})

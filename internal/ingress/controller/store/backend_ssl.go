@@ -29,7 +29,6 @@ import (
 
 	"k8s.io/ingress-nginx/internal/file"
 	"k8s.io/ingress-nginx/internal/ingress"
-	"k8s.io/ingress-nginx/internal/ingress/annotations/parser"
 	"k8s.io/ingress-nginx/internal/k8s"
 	"k8s.io/ingress-nginx/internal/net/ssl"
 )
@@ -46,12 +45,14 @@ func (s k8sStore) syncSecret(key string) {
 	// TODO: getPemCertificate should not write to disk to avoid unnecessary overhead
 	cert, err := s.getPemCertificate(key)
 	if err != nil {
-		glog.Warningf("error obtaining PEM from secret %v: %v", key, err)
+		if !isErrSecretForAuth(err) {
+			glog.Warningf("error obtaining PEM from secret %v: %v", key, err)
+		}
 		return
 	}
 
 	// create certificates and add or update the item in the store
-	cur, err := s.GetLocalSecret(key)
+	cur, err := s.GetLocalSSLCert(key)
 	if err == nil {
 		if cur.Equal(cert) {
 			// no need to update
@@ -83,6 +84,8 @@ func (s k8sStore) getPemCertificate(secretName string) (*ingress.SSLCert, error)
 	cert, okcert := secret.Data[apiv1.TLSCertKey]
 	key, okkey := secret.Data[apiv1.TLSPrivateKeyKey]
 	ca := secret.Data["ca.crt"]
+
+	auth := secret.Data["auth"]
 
 	// namespace/secretName -> namespace-secretName
 	nsSecName := strings.Replace(secretName, "/", "-", -1)
@@ -119,6 +122,10 @@ func (s k8sStore) getPemCertificate(secretName string) (*ingress.SSLCert, error)
 		glog.V(3).Infof("found only 'ca.crt', configuring %v as an Certificate Authentication Secret", secretName)
 
 	} else {
+		if auth != nil {
+			return nil, ErrSecretForAuth
+		}
+
 		return nil, fmt.Errorf("no keypair or CA cert could be found in %v", secretName)
 	}
 
@@ -129,9 +136,9 @@ func (s k8sStore) getPemCertificate(secretName string) (*ingress.SSLCert, error)
 }
 
 func (s k8sStore) checkSSLChainIssues() {
-	for _, item := range s.ListLocalSecrets() {
+	for _, item := range s.ListLocalSSLCerts() {
 		secretName := k8s.MetaNamespaceKey(item)
-		secret, err := s.GetLocalSecret(secretName)
+		secret, err := s.GetLocalSSLCert(secretName)
 		if err != nil {
 			continue
 		}
@@ -179,54 +186,10 @@ func (s k8sStore) checkSSLChainIssues() {
 	}
 }
 
-// checkMissingSecrets verifies if one or more ingress rules contains
-// a reference to a secret that is not present in the local secret store.
-func (s k8sStore) checkMissingSecrets() {
-	for _, ing := range s.ListIngresses() {
-		for _, tls := range ing.Spec.TLS {
-			if tls.SecretName == "" {
-				continue
-			}
-
-			key := fmt.Sprintf("%v/%v", ing.Namespace, tls.SecretName)
-			if _, ok := s.sslStore.Get(key); !ok {
-				s.syncSecret(key)
-			}
-		}
-
-		key, _ := parser.GetStringAnnotation("auth-tls-secret", ing)
-		if key == "" {
-			return
-		}
-
-		if _, ok := s.sslStore.Get(key); !ok {
-			s.syncSecret(key)
-		}
-	}
-}
-
-// ReadSecrets extracts information about secrets from an Ingress rule
-func (s k8sStore) ReadSecrets(ing *extensions.Ingress) {
-	for _, tls := range ing.Spec.TLS {
-		if tls.SecretName == "" {
-			continue
-		}
-
-		key := fmt.Sprintf("%v/%v", ing.Namespace, tls.SecretName)
-		s.syncSecret(key)
-	}
-
-	key, _ := parser.GetStringAnnotation("auth-tls-secret", ing)
-	if key == "" {
-		return
-	}
-	s.syncSecret(key)
-}
-
 // sendDummyEvent sends a dummy event to trigger an update
 // This is used in when a secret change
 func (s *k8sStore) sendDummyEvent() {
-	s.updateCh <- Event{
+	s.updateCh.In() <- Event{
 		Type: UpdateEvent,
 		Obj: &extensions.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
@@ -235,4 +198,11 @@ func (s *k8sStore) sendDummyEvent() {
 			},
 		},
 	}
+}
+
+// ErrSecretForAuth error to indicate a secret is used for authentication
+var ErrSecretForAuth = fmt.Errorf("Secret is used for authentication")
+
+func isErrSecretForAuth(e error) bool {
+	return e == ErrSecretForAuth
 }

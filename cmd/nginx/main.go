@@ -32,11 +32,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	discovery "k8s.io/apimachinery/pkg/version"
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"k8s.io/ingress-nginx/internal/file"
 	"k8s.io/ingress-nginx/internal/ingress/controller"
@@ -82,29 +82,6 @@ func main() {
 		glog.Fatalf("no service with name %v found: %v", conf.DefaultService, err)
 	}
 	glog.Infof("validated %v as the default backend", conf.DefaultService)
-
-	if conf.PublishService != "" {
-		ns, name, err := k8s.ParseNameNS(conf.PublishService)
-		if err != nil {
-			glog.Fatal(err)
-		}
-
-		svc, err := kubeClient.CoreV1().Services(ns).Get(name, metav1.GetOptions{})
-		if err != nil {
-			glog.Fatalf("unexpected error getting information about service %v: %v", conf.PublishService, err)
-		}
-
-		if len(svc.Status.LoadBalancer.Ingress) == 0 {
-			if len(svc.Spec.ExternalIPs) > 0 {
-				glog.Infof("service %v validated as assigned with externalIP", conf.PublishService)
-			} else {
-				// We could poll here, but we instead just exit and rely on k8s to restart us
-				glog.Fatalf("service %s does not (yet) have ingress points", conf.PublishService)
-			}
-		} else {
-			glog.Infof("service %v validated as source of Ingress status", conf.PublishService)
-		}
-	}
 
 	if conf.Namespace != "" {
 		_, err = kubeClient.CoreV1().Namespaces().Get(conf.Namespace, metav1.GetOptions{})
@@ -169,7 +146,7 @@ func handleSigterm(ngx *controller.NGINXController, exit exiter) {
 // apiserverHost param is in the format of protocol://address:port/pathPrefix, e.g.http://localhost:8001.
 // kubeConfig location of kubeconfig file
 func createApiserverClient(apiserverHost string, kubeConfig string) (*kubernetes.Clientset, error) {
-	cfg, err := buildConfigFromFlags(apiserverHost, kubeConfig)
+	cfg, err := clientcmd.BuildConfigFromFlags(apiserverHost, kubeConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -185,9 +162,41 @@ func createApiserverClient(apiserverHost string, kubeConfig string) (*kubernetes
 		return nil, err
 	}
 
-	v, err := client.Discovery().ServerVersion()
+	var v *discovery.Info
+
+	// In some environments is possible the client cannot connect the API server in the first request
+	// https://github.com/kubernetes/ingress-nginx/issues/1968
+	defaultRetry := wait.Backoff{
+		Steps:    10,
+		Duration: 1 * time.Second,
+		Factor:   1.5,
+		Jitter:   0.1,
+	}
+
+	var lastErr error
+	retries := 0
+	glog.V(2).Info("trying to discover Kubernetes version")
+	err = wait.ExponentialBackoff(defaultRetry, func() (bool, error) {
+		v, err = client.Discovery().ServerVersion()
+
+		if err == nil {
+			return true, nil
+		}
+
+		lastErr = err
+		glog.V(2).Infof("unexpected error discovering Kubernetes version (attempt %v): %v", err, retries)
+		retries++
+		return false, nil
+	})
+
+	// err is not null only if there was a timeout in the exponential backoff (ErrWaitTimeout)
 	if err != nil {
-		return nil, err
+		return nil, lastErr
+	}
+
+	// this should not happen, warn the user
+	if retries > 0 {
+		glog.Warningf("it was required to retry %v times before reaching the API server", retries)
 	}
 
 	glog.Infof("Running in Kubernetes Cluster version v%v.%v (%v) - git (%v) commit %v - platform %v",
@@ -207,30 +216,9 @@ const (
 	fakeCertificate = "default-fake-certificate"
 )
 
-// buildConfigFromFlags builds REST config based on master URL and kubeconfig path.
-// If both of them are empty then in cluster config is used.
-func buildConfigFromFlags(masterURL, kubeconfigPath string) (*rest.Config, error) {
-	if kubeconfigPath == "" && masterURL == "" {
-		kubeconfig, err := rest.InClusterConfig()
-		if err != nil {
-			return nil, err
-		}
-
-		return kubeconfig, nil
-	}
-
-	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
-		&clientcmd.ConfigOverrides{
-			ClusterInfo: clientcmdapi.Cluster{
-				Server: masterURL,
-			},
-		}).ClientConfig()
-}
-
 /**
  * Handles fatal init error that prevents server from doing any work. Prints verbose error
- * message and quits the server.
+ * messages and quits the server.
  */
 func handleFatalInitError(err error) {
 	glog.Fatalf("Error while initializing connection to Kubernetes apiserver. "+
