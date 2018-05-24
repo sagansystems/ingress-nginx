@@ -53,12 +53,12 @@ func GetNodeIPOrName(kubeClient clientset.Interface, name string, useInternalIP 
 				}
 			}
 		}
-	} else {
-		for _, address := range node.Status.Addresses {
-			if address.Type == apiv1.NodeExternalIP {
-				if address.Address != "" {
-					return address.Address
-				}
+	}
+
+	for _, address := range node.Status.Addresses {
+		if address.Type == apiv1.NodeExternalIP {
+			if address.Address != "" {
+				return address.Address
 			}
 		}
 	}

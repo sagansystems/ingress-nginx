@@ -65,6 +65,8 @@ type Config struct {
 
 	PublishService string
 
+	PublishStatusAddress string
+
 	ElectionID string
 
 	UpdateStatusOnShutdown bool
@@ -81,7 +83,9 @@ type Config struct {
 // in all the defined rules. To simplify the process leader election is used so the update
 // is executed only in one node (Ingress controllers can be scaled to more than one)
 // If the controller is running with the flag --publish-service (with a valid service)
-// the IP address behind the service is used, if not the source is the IP/s of the node/s
+// the IP address behind the service is used, if it is running with the flag
+// --publish-status-address, the address specified in the flag is used, if neither of the
+// two flags are set, the source is the IP/s of the node/s
 type statusSync struct {
 	Config
 	// pod contains runtime information about this pod
@@ -239,6 +243,11 @@ func (s *statusSync) runningAddresses() ([]string, error) {
 			return nil, err
 		}
 
+		if svc.Spec.Type == apiv1.ServiceTypeExternalName {
+			addrs = append(addrs, svc.Spec.ExternalName)
+			return addrs, nil
+		}
+
 		for _, ip := range svc.Status.LoadBalancer.Ingress {
 			if ip.IP == "" {
 				addrs = append(addrs, ip.Hostname)
@@ -251,6 +260,11 @@ func (s *statusSync) runningAddresses() ([]string, error) {
 		return addrs, nil
 	}
 
+	if s.PublishStatusAddress != "" {
+		addrs = append(addrs, s.PublishStatusAddress)
+		return addrs, nil
+	}
+
 	// get information about all the pods running the ingress controller
 	pods, err := s.Client.CoreV1().Pods(s.pod.Namespace).List(metav1.ListOptions{
 		LabelSelector: labels.SelectorFromSet(s.pod.Labels).String(),
@@ -260,6 +274,11 @@ func (s *statusSync) runningAddresses() ([]string, error) {
 	}
 
 	for _, pod := range pods.Items {
+		// only Running pods are valid
+		if pod.Status.Phase != apiv1.PodRunning {
+			continue
+		}
+
 		name := k8s.GetNodeIPOrName(s.Client, pod.Spec.NodeName, s.UseNodeInternalIP)
 		if !sliceutils.StringInSlice(name, addrs) {
 			addrs = append(addrs, name)

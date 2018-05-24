@@ -19,20 +19,23 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-export NGINX_VERSION=1.13.8
+export NGINX_VERSION=1.13.12
 export NDK_VERSION=0.3.0
-export VTS_VERSION=0.1.15
+export VTS_VERSION=0.1.16
 export SETMISC_VERSION=0.31
 export STICKY_SESSIONS_VERSION=08a395c66e42
 export MORE_HEADERS_VERSION=0.33
 export NGINX_DIGEST_AUTH=274490cec649e7300fea97fed13d84e596bbc0ce
 export NGINX_SUBSTITUTIONS=bc58cb11844bc42735bbaef7085ea86ace46d05b
-export NGINX_OPENTRACING_VERSION=0.2.1
-export OPENTRACING_CPP_VERSION=1.2.0
-export ZIPKIN_CPP_VERSION=0.2.0
-export JAEGER_VERSION=0.1.0
+export NGINX_OPENTRACING_VERSION=0.3.0
+export OPENTRACING_CPP_VERSION=1.4.0
+export ZIPKIN_CPP_VERSION=0.3.1
+export JAEGER_VERSION=0.4.1
 export MODSECURITY_VERSION=1.0.0
-export LUA_VERSION=0.10.12rc2
+export LUA_NGX_VERSION=0.10.13
+export LUA_UPSTREAM_VERSION=0.07
+export COOKIE_FLAG_VERSION=1.1.0
+export NGINX_INFLUXDB_VERSION=41eef3df53d867483037bb84dd4816c9a9a4c24b
 
 export BUILD_PATH=/tmp/build
 
@@ -82,6 +85,9 @@ clean-install \
   libcurl4-openssl-dev \
   procps \
   git g++ pkgconf flex bison doxygen libyajl-dev liblmdb-dev libtool dh-autoreconf libxml2 libpcre++-dev libxml2-dev \
+  lua-cjson \
+  python \
+  luarocks \
   || exit 1
 
 ln -s /usr/lib/x86_64-linux-gnu/liblua5.1.so /usr/lib/liblua.so
@@ -94,18 +100,22 @@ if [[ ${ARCH} == "s390x" ]]; then
   git config --global pack.threads "1"
 fi
 
-# download GeoIP databases
-wget -O /etc/nginx/GeoIP.dat.gz https://geolite.maxmind.com/download/geoip/database/GeoLiteCountry/GeoIP.dat.gz || { echo 'Could not download GeoLiteCountry, exiting.' ; exit 1; }
-wget -O /etc/nginx/GeoLiteCity.dat.gz https://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz || { echo 'Could not download GeoLiteCity, exiting.' ; exit 1; }
-
-gunzip /etc/nginx/GeoIP.dat.gz
-gunzip /etc/nginx/GeoLiteCity.dat.gz
+# Get the GeoIP data
+GEOIP_FOLDER=/etc/nginx/geoip
+mkdir -p $GEOIP_FOLDER
+function geoip_get {
+  wget -O $GEOIP_FOLDER/$1 $2 || { echo "Could not download $1, exiting." ; exit 1; }
+  gunzip $GEOIP_FOLDER/$1
+}
+geoip_get "GeoIP.dat.gz" "https://geolite.maxmind.com/download/geoip/database/GeoLiteCountry/GeoIP.dat.gz"
+geoip_get "GeoLiteCity.dat.gz" "https://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz"
+geoip_get "GeoIPASNum.dat.gz" "http://download.maxmind.com/download/geoip/database/asnum/GeoIPASNum.dat.gz"
 
 mkdir --verbose -p "$BUILD_PATH"
 cd "$BUILD_PATH"
 
 # download, verify and extract the source files
-get_src 8410b6c31ff59a763abf7e5a5316e7629f5a5033c95a3a0ebde727f9ec8464c5 \
+get_src fb92f5602cdb8d3ab1ad47dbeca151b185d62eedb67d347bbe9d79c1438c85de \
         "http://nginx.org/download/nginx-$NGINX_VERSION.tar.gz"
 
 get_src 88e05a99a8a7419066f5ae75966fb1efc409bad4522d14986da074554ae61619 \
@@ -114,7 +124,7 @@ get_src 88e05a99a8a7419066f5ae75966fb1efc409bad4522d14986da074554ae61619 \
 get_src 97946a68937b50ab8637e1a90a13198fe376d801dc3e7447052e43c28e9ee7de \
         "https://github.com/openresty/set-misc-nginx-module/archive/v$SETMISC_VERSION.tar.gz"
 
-get_src 5112a054b1b1edb4c0042a9a840ef45f22abb3c05c68174e28ebf483164fb7e1 \
+get_src c668d0ed38afbba12f0224cb8cf5d70dcb9388723766dfb40d00539f887186fa \
         "https://github.com/vozlt/nginx-module-vts/archive/v$VTS_VERSION.tar.gz"
 
 get_src a3dcbab117a9c103bc1ea5200fc00a7b7d2af97ff7fd525f16f8ac2632e30fbf \
@@ -129,28 +139,113 @@ get_src ede0ad490cb9dd69da348bdea2a60a4c45284c9777b2f13fa48394b6b8e7671c \
 get_src 618551948ab14cac51d6e4ad00452312c7b09938f59ebff4f93875013be31f2d \
         "https://github.com/yaoweibin/ngx_http_substitutions_filter_module/archive/$NGINX_SUBSTITUTIONS.tar.gz"
 
-get_src ce66acf943a604ef9a0bb477c7efca1fe583076991647aa646aa3d8804328364 \
+get_src 2d2b8784a09c7bb4ae7f8a76ab679c54a683b8dda26db2f948982de0ad44c7a5 \
         "https://github.com/opentracing-contrib/nginx-opentracing/archive/v$NGINX_OPENTRACING_VERSION.tar.gz"
 
-get_src c77041cb2f147ac81b2b0702abfced5565a9cebc318d045c060a4c3e074009ee \
+get_src 2eb0a4a7dc62bc8cbf12872080197b41d53b4c04966c860774a6b11fd59fad55 \
         "https://github.com/opentracing/opentracing-cpp/archive/v$OPENTRACING_CPP_VERSION.tar.gz"
 
-get_src 611eb6a1ff1c326c472421ae2486ba34a94ddc78d90047df3f097bcdad3298e3 \
+get_src f16a6f1eed494ca3c2607d7ad671cb134bd7eb320c5969c8281c10922a146589 \
         "https://github.com/rnburn/zipkin-cpp-opentracing/archive/v$ZIPKIN_CPP_VERSION.tar.gz"
 
 get_src 8deee6d6f7128f58bd6ba2893bd69c1fdbc8a3ad2797ba45ef94b977255d181c \
         "https://github.com/SpiderLabs/ModSecurity-nginx/archive/v$MODSECURITY_VERSION.tar.gz"
 
-get_src 18edf2d18fa331265c36516a4a19ba75d26f46eafcc5e0c2d9aa6c237e8bc110 \
-        "https://github.com/openresty/lua-nginx-module/archive/v$LUA_VERSION.tar.gz"
+get_src 35b5a96ceb0aec68abdf25cdb9fe43cce09b2ab7bf52fb32d77038f21fef75ac \
+        "https://github.com/jaegertracing/jaeger-client-cpp/archive/v$JAEGER_VERSION.tar.gz"
 
-get_src 678ec4b6c2b6bba7e8000f42feb71d2bf044a44cf3909b3cbbccb708827ca7a6 \
-        "https://github.com/jaegertracing/cpp-client/archive/v$JAEGER_VERSION.tar.gz"
+get_src 9915ad1cf0734cc5b357b0d9ea92fec94764b4bf22f4dce185cbd65feda30ec1 \
+        "https://github.com/AirisX/nginx_cookie_flag_module/archive/v$COOKIE_FLAG_VERSION.tar.gz"
 
-#https://blog.cloudflare.com/optimizing-tls-over-tcp-to-reduce-latency/
-curl -sSL -o nginx__dynamic_tls_records.patch https://raw.githubusercontent.com/cloudflare/sslconfig/master/patches/nginx__1.11.5_dynamic_tls_records.patch
+get_src ecea8c3d7f69dd48c6132498ddefb5d83ba9f387fa3d4da14e2abeacdfc8a3ee \
+        "https://github.com/openresty/lua-nginx-module/archive/v$LUA_NGX_VERSION.tar.gz"
 
-export MAKEFLAGS=-j$(($(grep -c ^processor /proc/cpuinfo) - 0))
+get_src 2a69815e4ae01aa8b170941a8e1a10b6f6a9aab699dee485d58f021dd933829a \
+        "https://github.com/openresty/lua-upstream-nginx-module/archive/v$LUA_UPSTREAM_VERSION.tar.gz"
+
+get_src d4a9ed0d2405f41eb0178462b398afde8599c5115dcc1ff8f60e2f34a41a4c21 \
+        "https://github.com/openresty/lua-resty-lrucache/archive/v0.07.tar.gz"
+
+get_src 92fd006d5ca3b3266847d33410eb280122a7f6c06334715f87acce064188a02e \
+        "https://github.com/openresty/lua-resty-core/archive/v0.1.14rc1.tar.gz"
+
+get_src eaf84f58b43289c1c3e0442ada9ed40406357f203adc96e2091638080cb8d361 \
+        "https://github.com/openresty/lua-resty-lock/archive/v0.07.tar.gz"
+
+get_src 3917d506e2d692088f7b4035c589cc32634de4ea66e40fc51259fbae43c9258d \
+        "https://github.com/hamishforbes/lua-resty-iputils/archive/v0.3.0.tar.gz"
+
+get_src 5d16e623d17d4f42cc64ea9cfb69ca960d313e12f5d828f785dd227cc483fcbd \
+        "https://github.com/openresty/lua-resty-upload/archive/v0.10.tar.gz"
+
+get_src feacc662fd7724741c2b3277b2d27b5ab2821bdb28b499d063dbd23414447249 \
+        "https://github.com/openresty/lua-resty-dns/archive/v0.21rc2.tar.gz"
+
+get_src 30a68f1828ed6a53ee6ed062132ea914201076058b1d126ea90ff8e55df09daf \
+        "https://github.com/openresty/lua-resty-string/archive/v0.11rc1.tar.gz"
+
+get_src a77bf0d7cf6a9ba017d0dc973b1a58f13e48242dd3849c5e99c07d250667c44c \
+        "https://github.com/openresty/lua-resty-balancer/archive/v0.02rc4.tar.gz"
+
+get_src d81b33129c6fb5203b571fa4d8394823bf473d8872c0357a1d0f14420b1483bd \
+        "https://github.com/cloudflare/lua-resty-cookie/archive/v0.1.0.tar.gz"
+
+get_src 76d8638a350a0484b3d6658e329ba38bb831d407eaa6dce2a084a27a22063133 \
+        "https://github.com/openresty/luajit2/archive/v2.1-20180420.tar.gz"
+
+get_src 3926d41fb23fc2f4e54773f3c847153f6f17195a03677f9624e740605c49a771 \
+        "https://github.com/influxdata/nginx-influxdb-module/archive/$NGINX_INFLUXDB_VERSION.tar.gz"
+
+
+# improve compilation times
+CORES=$(($(grep -c ^processor /proc/cpuinfo) - 0))
+
+export MAKEFLAGS=-j${CORES}
+export CTEST_BUILD_FLAGS=${MAKEFLAGS}
+export HUNTER_JOBS_NUMBER=${CORES}
+
+# luajit is not available on ppc64le and s390x
+if [[ (${ARCH} != "ppc64le") && (${ARCH} != "s390x") ]]; then
+  cd "$BUILD_PATH/luajit2-2.1-20180420"
+  make
+  make install
+
+  export LUAJIT_LIB=/usr/local/lib
+  export LUAJIT_INC=/usr/local/include/luajit-2.1
+  export LUA_LIB_DIR="$LUAJIT_LIB/lua"
+
+  cd "$BUILD_PATH/lua-resty-core-0.1.14rc1"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-lrucache-0.07"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-lock-0.07"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-iputils-0.3.0"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-upload-0.10"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-dns-0.21rc2"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-string-0.11rc1"
+  make install
+
+  cd "$BUILD_PATH/lua-resty-balancer-0.02rc4"
+  make all
+  make install
+
+  cd "$BUILD_PATH/lua-resty-cookie-0.1.0"
+  make install
+
+  # build and install lua-resty-waf with dependencies
+  /install_lua_resty_waf.sh
+
+fi
 
 # build opentracing lib
 cd "$BUILD_PATH/opentracing-cpp-$OPENTRACING_CPP_VERSION"
@@ -161,15 +256,18 @@ make
 make install
 
 # build zipkin lib
-cd "$BUILD_PATH/cpp-client-$JAEGER_VERSION"
+cd "$BUILD_PATH/jaeger-client-cpp-$JAEGER_VERSION"
 sed -i 's/-Werror//' CMakeLists.txt
 mkdir .build
 cd .build
-cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=1 -DBUILD_TESTING=OFF -DJAEGERTRACING_WITH_YAML_CPP=OFF ..
+cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=1 -DBUILD_TESTING=OFF -DJAEGERTRACING_WITH_YAML_CPP=OFF -DJAEGERTRACING_BUILD_EXAMPLES=OFF ..
 make
 make install
 
 export HUNTER_INSTALL_DIR=$(cat _3rdParty/Hunter/install-root-dir)
+echo "HUNTER_INSTALL_DIR: ${HUNTER_INSTALL_DIR}"
+cp $HUNTER_INSTALL_DIR/lib/libthrift* /usr/local/lib
+rm /usr/local/lib/libthrift*.a
 
 # build zipkin lib
 cd "$BUILD_PATH/zipkin-cpp-opentracing-$ZIPKIN_CPP_VERSION"
@@ -181,15 +279,17 @@ make install
 
 # Get Brotli source and deps
 cd "$BUILD_PATH"
-git clone --depth=1 https://github.com/eustas/ngx_brotli.git
-cd ngx_brotli 
+git clone --depth=1 https://github.com/google/ngx_brotli.git
+cd ngx_brotli
 git submodule init
 git submodule update
 
 # build modsecurity library
 cd "$BUILD_PATH"
-git clone --depth 1 -b v3/master --single-branch https://github.com/SpiderLabs/ModSecurity
+git clone -b v3/master --single-branch https://github.com/SpiderLabs/ModSecurity
 cd ModSecurity/
+# checkout v3.0.2
+git checkout 8d0f51beda5c031e38741c27f29b67f0266352bb
 git submodule init
 git submodule update
 sh build.sh
@@ -197,12 +297,58 @@ sh build.sh
 make
 make install
 
+# Download owasp modsecurity crs
+cd /etc/nginx/
+git clone -b v3.0/master --single-branch https://github.com/SpiderLabs/owasp-modsecurity-crs
+cd owasp-modsecurity-crs
+git checkout e4e0497be4d598cce0e0a8fef20d1f1e5578c8d0
+
+mv crs-setup.conf.example crs-setup.conf
+mv rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf.example rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+mv rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf.example rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+cd ..
+
+# Download modsecurity.conf
+mkdir modsecurity
+cd modsecurity
+curl -sSL -o modsecurity.conf https://raw.githubusercontent.com/SpiderLabs/ModSecurity/v3/master/modsecurity.conf-recommended
+
+# OWASP CRS v3 rules
+echo "
+Include /etc/nginx/owasp-modsecurity-crs/crs-setup.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-901-INITIALIZATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-903.9001-DRUPAL-EXCLUSION-RULES.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-903.9002-WORDPRESS-EXCLUSION-RULES.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-905-COMMON-EXCEPTIONS.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-910-IP-REPUTATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-911-METHOD-ENFORCEMENT.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-912-DOS-PROTECTION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-913-SCANNER-DETECTION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-920-PROTOCOL-ENFORCEMENT.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-921-PROTOCOL-ATTACK.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-930-APPLICATION-ATTACK-LFI.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-931-APPLICATION-ATTACK-RFI.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-932-APPLICATION-ATTACK-RCE.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-933-APPLICATION-ATTACK-PHP.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-943-APPLICATION-ATTACK-SESSION-FIXATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-950-DATA-LEAKAGES.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-951-DATA-LEAKAGES-SQL.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-952-DATA-LEAKAGES-JAVA.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-953-DATA-LEAKAGES-PHP.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-954-DATA-LEAKAGES-IIS.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-959-BLOCKING-EVALUATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-980-CORRELATION.conf
+Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+" > /etc/nginx/owasp-modsecurity-crs/nginx-modsecurity.conf
+
 # build nginx
 cd "$BUILD_PATH/nginx-$NGINX_VERSION"
 
 echo "Applying nginx patches..."
-patch -p1 < $BUILD_PATH/nginx__dynamic_tls_records.patch
-
 # nginx mailing list patch to expose $proxy_protocol_server_port
 # http://mailman.nginx.org/pipermail/nginx-devel/2018-January/010761.html
 patch -p1 < /gladly_patches/nginx/mailing_list_cbranch_cloudflare.patch
@@ -231,11 +377,13 @@ if [[ ${ARCH} != "armv7l" || ${ARCH} != "aarch64" ]]; then
   WITH_FLAGS+=" --with-file-aio"
 fi
 
-CC_OPT="-g -O3 -flto -fPIE -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2 -Wno-deprecated-declarations --param=ssp-buffer-size=4 -DTCP_FASTOPEN=23 -Wno-error=strict-aliasing -fPIC -I$HUNTER_INSTALL_DIR/include"
-LD_OPT="-ljemalloc -Wl,-Bsymbolic-functions -fPIE -fPIC -pie -Wl,-z,relro -Wl,-z,now -L$HUNTER_INSTALL_DIR/lib"
-   
+# "Combining -flto with -g is currently experimental and expected to produce unexpected results."
+# https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html
+CC_OPT="-g -Og -fPIE -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2 -Wno-deprecated-declarations --param=ssp-buffer-size=4 -DTCP_FASTOPEN=23 -Wno-error=strict-aliasing -fPIC -I$HUNTER_INSTALL_DIR/include"
+LD_OPT="-ljemalloc -fPIE -fPIC -pie -Wl,-z,relro -Wl,-z,now -L$HUNTER_INSTALL_DIR/lib"
+
 if [[ ${ARCH} == "x86_64" ]]; then
-  CC_OPT+=' -m64 -mtune=generic'
+  CC_OPT+=' -m64 -mtune=native'
 fi
 
 WITH_MODULES="--add-module=$BUILD_PATH/ngx_devel_kit-$NDK_VERSION \
@@ -245,7 +393,10 @@ WITH_MODULES="--add-module=$BUILD_PATH/ngx_devel_kit-$NDK_VERSION \
   --add-module=$BUILD_PATH/nginx-goodies-nginx-sticky-module-ng-$STICKY_SESSIONS_VERSION \
   --add-module=$BUILD_PATH/nginx-http-auth-digest-$NGINX_DIGEST_AUTH \
   --add-module=$BUILD_PATH/ngx_http_substitutions_filter_module-$NGINX_SUBSTITUTIONS \
-  --add-module=$BUILD_PATH/lua-nginx-module-$LUA_VERSION \
+  --add-module=$BUILD_PATH/lua-nginx-module-$LUA_NGX_VERSION \
+  --add-module=$BUILD_PATH/lua-upstream-nginx-module-$LUA_UPSTREAM_VERSION \
+  --add-module=$BUILD_PATH/nginx_cookie_flag_module-$COOKIE_FLAG_VERSION \
+  --add-module=$BUILD_PATH/nginx-influxdb-module-$NGINX_INFLUXDB_VERSION \
   --add-dynamic-module=$BUILD_PATH/nginx-opentracing-$NGINX_OPENTRACING_VERSION/opentracing \
   --add-dynamic-module=$BUILD_PATH/nginx-opentracing-$NGINX_OPENTRACING_VERSION/jaeger \
   --add-dynamic-module=$BUILD_PATH/nginx-opentracing-$NGINX_OPENTRACING_VERSION/zipkin \
@@ -323,57 +474,7 @@ rm -rf /usr/local/modsecurity/bin
 rm -rf /usr/local/modsecurity/include
 rm -rf /usr/local/modsecurity/lib/libmodsecurity.a
 
-cp $HUNTER_INSTALL_DIR/lib/libthrift* /usr/local/lib
-rm /usr/local/lib/libthrift*.a
+rm -rf /etc/nginx/owasp-modsecurity-crs/.git
+rm -rf /etc/nginx/owasp-modsecurity-crs/util/regression-tests
 
 rm -rf $HOME/.hunter
-
-# Download owasp modsecurity crs
-cd /etc/nginx/
-curl -sSL -o master.tgz https://github.com/SpiderLabs/owasp-modsecurity-crs/archive/v3.0.2/master.tar.gz
-tar zxpvf master.tgz
-mv owasp-modsecurity-crs-3.0.2/ owasp-modsecurity-crs
-rm master.tgz
-
-cd owasp-modsecurity-crs
-mv crs-setup.conf.example crs-setup.conf
-mv rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf.example rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
-mv rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf.example rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
-cd ..
-
-# Download modsecurity.conf
-mkdir modsecurity
-cd modsecurity
-curl -sSL -o modsecurity.conf https://raw.githubusercontent.com/SpiderLabs/ModSecurity/v3/master/modsecurity.conf-recommended
-
-# OWASP CRS v3 rules
-echo "
-Include /etc/nginx/owasp-modsecurity-crs/crs-setup.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-901-INITIALIZATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-903.9001-DRUPAL-EXCLUSION-RULES.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-903.9002-WORDPRESS-EXCLUSION-RULES.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-905-COMMON-EXCEPTIONS.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-910-IP-REPUTATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-911-METHOD-ENFORCEMENT.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-912-DOS-PROTECTION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-913-SCANNER-DETECTION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-920-PROTOCOL-ENFORCEMENT.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-921-PROTOCOL-ATTACK.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-930-APPLICATION-ATTACK-LFI.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-931-APPLICATION-ATTACK-RFI.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-932-APPLICATION-ATTACK-RCE.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-933-APPLICATION-ATTACK-PHP.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-943-APPLICATION-ATTACK-SESSION-FIXATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-950-DATA-LEAKAGES.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-951-DATA-LEAKAGES-SQL.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-952-DATA-LEAKAGES-JAVA.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-953-DATA-LEAKAGES-PHP.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-954-DATA-LEAKAGES-IIS.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-959-BLOCKING-EVALUATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-980-CORRELATION.conf
-Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
-" > /etc/nginx/owasp-modsecurity-crs/nginx-modsecurity.conf
