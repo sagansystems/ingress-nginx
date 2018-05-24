@@ -18,12 +18,15 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +36,7 @@ import (
 	"github.com/golang/glog"
 
 	proxyproto "github.com/armon/go-proxyproto"
+	"github.com/eapache/channels"
 	apiv1 "k8s.io/api/core/v1"
 	extensions "k8s.io/api/extensions/v1beta1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -106,7 +110,7 @@ func NewNGINXController(config *Configuration, fs file.Filesystem) *NGINXControl
 		}),
 
 		stopCh:   make(chan struct{}),
-		updateCh: make(chan store.Event, 1024),
+		updateCh: channels.NewRingChannel(1024),
 
 		stopLock: &sync.Mutex{},
 
@@ -140,6 +144,7 @@ func NewNGINXController(config *Configuration, fs file.Filesystem) *NGINXControl
 		n.syncStatus = status.NewStatusSyncer(status.Config{
 			Client:                 config.Client,
 			PublishService:         config.PublishService,
+			PublishStatusAddress:   config.PublishStatusAddress,
 			IngressLister:          n.store,
 			ElectionID:             config.ElectionID,
 			IngressClass:           class.IngressClass,
@@ -151,8 +156,7 @@ func NewNGINXController(config *Configuration, fs file.Filesystem) *NGINXControl
 		glog.Warning("Update of ingress status is disabled (flag --update-status=false was specified)")
 	}
 
-	var onChange func()
-	onChange = func() {
+	onTemplateChange := func() {
 		template, err := ngx_template.NewTemplate(tmplPath, fs)
 		if err != nil {
 			// this error is different from the rest because it must be clear why nginx is not working
@@ -178,12 +182,42 @@ Error loading new template : %v
 
 	// TODO: refactor
 	if _, ok := fs.(filesystem.DefaultFs); !ok {
-		watch.NewDummyFileWatcher(tmplPath, onChange)
+		watch.NewDummyFileWatcher(tmplPath, onTemplateChange)
 	} else {
-		_, err = watch.NewFileWatcher(tmplPath, onChange)
+
+		_, err = watch.NewFileWatcher(tmplPath, onTemplateChange)
 		if err != nil {
-			glog.Fatalf("unexpected error watching template %v: %v", tmplPath, err)
+			glog.Fatalf("unexpected error creating file watcher: %v", err)
 		}
+
+		filesToWatch := []string{}
+		err := filepath.Walk("/etc/nginx/geoip/", func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			if info.IsDir() {
+				return nil
+			}
+
+			filesToWatch = append(filesToWatch, path)
+			return nil
+		})
+
+		if err != nil {
+			glog.Fatalf("unexpected error creating file watcher: %v", err)
+		}
+
+		for _, f := range filesToWatch {
+			_, err = watch.NewFileWatcher(f, func() {
+				glog.Info("file %v changed. Reloading NGINX", f)
+				n.SetForceReload(true)
+			})
+			if err != nil {
+				glog.Fatalf("unexpected error creating file watcher: %v", err)
+			}
+		}
+
 	}
 
 	return n
@@ -209,7 +243,7 @@ type NGINXController struct {
 	stopLock *sync.Mutex
 
 	stopCh   chan struct{}
-	updateCh chan store.Event
+	updateCh *channels.RingChannel
 
 	// ngxErrCh channel used to detect errors with the nginx processes
 	ngxErrCh chan error
@@ -249,7 +283,6 @@ func (n *NGINXController) Start() {
 		go n.syncStatus.Run()
 	}
 
-	done := make(chan error, 1)
 	cmd := exec.Command(n.binary, "-c", cfgPath)
 
 	// put nginx in another process group to prevent it
@@ -272,7 +305,7 @@ func (n *NGINXController) Start() {
 
 	for {
 		select {
-		case err := <-done:
+		case err := <-n.ngxErrCh:
 			if n.isShuttingDown {
 				break
 			}
@@ -286,20 +319,28 @@ func (n *NGINXController) Start() {
 				process.WaitUntilPortIsAvailable(n.cfg.ListenPorts.HTTP)
 				// release command resources
 				cmd.Process.Release()
-				cmd = exec.Command(n.binary, "-c", cfgPath)
 				// start a new nginx master process if the controller is not being stopped
+				cmd = exec.Command(n.binary, "-c", cfgPath)
+				cmd.SysProcAttr = &syscall.SysProcAttr{
+					Setpgid: true,
+					Pgid:    0,
+				}
 				n.start(cmd)
 			}
-		case evt := <-n.updateCh:
+		case event := <-n.updateCh.Out():
 			if n.isShuttingDown {
 				break
 			}
-			glog.V(3).Infof("Event %v received - object %v", evt.Type, evt.Obj)
-			if evt.Type == store.ConfigurationEvent {
-				n.SetForceReload(true)
-			}
+			if evt, ok := event.(store.Event); ok {
+				glog.V(3).Infof("Event %v received - object %v", evt.Type, evt.Obj)
+				if evt.Type == store.ConfigurationEvent {
+					n.SetForceReload(true)
+				}
 
-			n.syncQueue.Enqueue(evt.Obj)
+				n.syncQueue.Enqueue(evt.Obj)
+			} else {
+				glog.Warningf("unexpected event type received %T", event)
+			}
 		case <-n.stopCh:
 			break
 		}
@@ -408,7 +449,7 @@ Error: %v
 // 2. write the custom template (the complexity depends on the implementation)
 // 3. write the configuration file
 //
-// returning nill implies the backend will be reloaded.
+// returning nil implies the backend will be reloaded.
 // if an error is returned means requeue the update
 func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) error {
 	cfg := n.store.GetBackendConfiguration()
@@ -475,7 +516,7 @@ func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) error {
 		if srv.RedirectFromToWWW {
 			var n string
 			if strings.HasPrefix(srv.Hostname, "www.") {
-				n = strings.TrimLeft(srv.Hostname, "www.")
+				n = strings.TrimPrefix(srv.Hostname, "www.")
 			} else {
 				n = fmt.Sprintf("www.%v", srv.Hostname)
 			}
@@ -513,7 +554,7 @@ func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) error {
 		wp = 1
 	}
 	maxOpenFiles := (sysctlFSFileMax() / wp) - 1024
-	glog.V(3).Infof("maximum number of open file descriptors : %v", sysctlFSFileMax())
+	glog.V(2).Infof("maximum number of open file descriptors : %v", maxOpenFiles)
 	if maxOpenFiles < 1024 {
 		// this means the value of RLIMIT_NOFILE is too low.
 		maxOpenFiles = 1024
@@ -564,23 +605,27 @@ func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) error {
 	cfg.SSLDHParam = sslDHParam
 
 	tc := ngx_config.TemplateConfig{
-		ProxySetHeaders:         setHeaders,
-		AddHeaders:              addHeaders,
-		MaxOpenFiles:            maxOpenFiles,
-		BacklogSize:             sysctlSomaxconn(),
-		Backends:                ingressCfg.Backends,
-		PassthroughBackends:     ingressCfg.PassthroughBackends,
-		Servers:                 ingressCfg.Servers,
-		TCPBackends:             ingressCfg.TCPEndpoints,
-		UDPBackends:             ingressCfg.UDPEndpoints,
-		HealthzURI:              ngxHealthPath,
-		CustomErrors:            len(cfg.CustomHTTPErrors) > 0,
-		Cfg:                     cfg,
-		IsIPV6Enabled:           n.isIPV6Enabled && !cfg.DisableIpv6,
-		RedirectServers:         redirectServers,
-		IsSSLPassthroughEnabled: n.cfg.EnableSSLPassthrough,
-		ListenPorts:             n.cfg.ListenPorts,
-		PublishService:          n.GetPublishService(),
+		ProxySetHeaders:             setHeaders,
+		AddHeaders:                  addHeaders,
+		MaxOpenFiles:                maxOpenFiles,
+		BacklogSize:                 sysctlSomaxconn(),
+		Backends:                    ingressCfg.Backends,
+		PassthroughBackends:         ingressCfg.PassthroughBackends,
+		Servers:                     ingressCfg.Servers,
+		TCPBackends:                 ingressCfg.TCPEndpoints,
+		UDPBackends:                 ingressCfg.UDPEndpoints,
+		HealthzURI:                  ngxHealthPath,
+		CustomErrors:                len(cfg.CustomHTTPErrors) > 0,
+		Cfg:                         cfg,
+		IsIPV6Enabled:               n.isIPV6Enabled && !cfg.DisableIpv6,
+		NginxStatusIpv4Whitelist:    cfg.NginxStatusIpv4Whitelist,
+		NginxStatusIpv6Whitelist:    cfg.NginxStatusIpv6Whitelist,
+		RedirectServers:             redirectServers,
+		IsSSLPassthroughEnabled:     n.cfg.EnableSSLPassthrough,
+		ListenPorts:                 n.cfg.ListenPorts,
+		PublishService:              n.GetPublishService(),
+		DynamicConfigurationEnabled: n.cfg.DynamicConfigurationEnabled,
+		DisableLua:                  n.cfg.DisableLua,
 	}
 
 	content, err := n.t.Write(tc)
@@ -702,4 +747,71 @@ func (n *NGINXController) setupSSLProxy() {
 			go n.Proxy.Handle(conn)
 		}
 	}()
+}
+
+// IsDynamicConfigurationEnough decides if the new configuration changes can be dynamically applied without reloading
+func (n *NGINXController) IsDynamicConfigurationEnough(pcfg *ingress.Configuration) bool {
+	copyOfRunningConfig := *n.runningConfig
+	copyOfPcfg := *pcfg
+
+	copyOfRunningConfig.Backends = []*ingress.Backend{}
+	copyOfPcfg.Backends = []*ingress.Backend{}
+
+	return copyOfRunningConfig.Equal(&copyOfPcfg)
+}
+
+// configureDynamically JSON encodes new Backends and POSTs it to an internal HTTP endpoint
+// that is handled by Lua
+func configureDynamically(pcfg *ingress.Configuration, port int) error {
+	backends := make([]*ingress.Backend, len(pcfg.Backends))
+
+	for i, backend := range pcfg.Backends {
+		luaBackend := &ingress.Backend{
+			Name:            backend.Name,
+			Port:            backend.Port,
+			Secure:          backend.Secure,
+			SSLPassthrough:  backend.SSLPassthrough,
+			SessionAffinity: backend.SessionAffinity,
+			UpstreamHashBy:  backend.UpstreamHashBy,
+			LoadBalancing:   backend.LoadBalancing,
+		}
+
+		var endpoints []ingress.Endpoint
+		for _, endpoint := range backend.Endpoints {
+			endpoints = append(endpoints, ingress.Endpoint{
+				Address:     endpoint.Address,
+				FailTimeout: endpoint.FailTimeout,
+				MaxFails:    endpoint.MaxFails,
+				Port:        endpoint.Port,
+			})
+		}
+
+		luaBackend.Endpoints = endpoints
+		backends[i] = luaBackend
+	}
+
+	buf, err := json.Marshal(backends)
+	if err != nil {
+		return err
+	}
+
+	glog.V(2).Infof("posting backends configuration: %s", buf)
+
+	url := fmt.Sprintf("http://localhost:%d/configuration/backends", port)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			glog.Warningf("error while closing response body: \n%v", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("Unexpected error code: %d", resp.StatusCode)
+	}
+
+	return nil
 }
