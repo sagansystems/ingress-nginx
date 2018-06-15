@@ -29,6 +29,8 @@ import (
 	"k8s.io/ingress-nginx/internal/ingress/annotations/connection"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/cors"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/ipwhitelist"
+	"k8s.io/ingress-nginx/internal/ingress/annotations/log"
+	"k8s.io/ingress-nginx/internal/ingress/annotations/luarestywaf"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/proxy"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/ratelimit"
 	"k8s.io/ingress-nginx/internal/ingress/annotations/redirect"
@@ -49,9 +51,9 @@ var (
 type Configuration struct {
 	// Backends are a list of backends used by all the Ingress rules in the
 	// ingress controller. This list includes the default backend
-	Backends []*Backend `json:"backends,omitEmpty"`
+	Backends []*Backend `json:"backends,omitempty"`
 	// Servers
-	Servers []*Server `json:"servers,omitEmpty"`
+	Servers []*Server `json:"servers,omitempty"`
 	// TCPEndpoints contain endpoints for tcp streams handled by this backend
 	// +optional
 	TCPEndpoints []L4Service `json:"tcpEndpoints,omitempty"`
@@ -83,10 +85,12 @@ type Backend struct {
 	SSLPassthrough bool `json:"sslPassthrough"`
 	// Endpoints contains the list of endpoints currently running
 	Endpoints []Endpoint `json:"endpoints,omitempty"`
-	// StickySessionAffinitySession contains the StickyConfig object with stickness configuration
+	// StickySessionAffinitySession contains the StickyConfig object with stickyness configuration
 	SessionAffinity SessionAffinityConfig `json:"sessionAffinityConfig"`
 	// Consistent hashing by NGINX variable
 	UpstreamHashBy string `json:"upstream-hash-by,omitempty"`
+	// LB algorithm configuration per ingress
+	LoadBalancing string `json:"load-balance,omitempty"`
 }
 
 // SessionAffinityConfig describes different affinity configurations for new sessions.
@@ -117,7 +121,7 @@ type Endpoint struct {
 	// Port number of the TCP port
 	Port string `json:"port"`
 	// MaxFails returns the number of unsuccessful attempts to communicate
-	// allowed before this should be considered dow.
+	// allowed before this should be considered down.
 	// Setting 0 indicates that the check is performed by a Kubernetes probe
 	MaxFails int `json:"maxFails"`
 	// FailTimeout returns the time in seconds during which the specified number
@@ -125,7 +129,7 @@ type Endpoint struct {
 	// to consider the endpoint unavailable
 	FailTimeout int `json:"failTimeout"`
 	// Target returns a reference to the object providing the endpoint
-	Target *apiv1.ObjectReference `json:"target,omipempty"`
+	Target *apiv1.ObjectReference `json:"target,omitempty"`
 }
 
 // Server describes a website
@@ -143,7 +147,7 @@ type Server struct {
 	// SSLExpireTime has the expire date of this certificate
 	SSLExpireTime time.Time `json:"sslExpireTime"`
 	// SSLPemChecksum returns the checksum of the certificate file on disk.
-	// There is no restriction in the hash generator. This checksim can be
+	// There is no restriction in the hash generator. This checksum can be
 	// used to  determine if the secret changed without the use of file
 	// system notifications
 	SSLPemChecksum string `json:"sslPemChecksum"`
@@ -156,10 +160,13 @@ type Server struct {
 	// CertificateAuth indicates the this server requires mutual authentication
 	// +optional
 	CertificateAuth authtls.Config `json:"certificateAuth"`
-
 	// ServerSnippet returns the snippet of server
 	// +optional
 	ServerSnippet string `json:"serverSnippet"`
+	// SSLCiphers returns list of ciphers to be enabled
+	SSLCiphers string `json:"sslCiphers,omitempty"`
+	// AuthTLSError contains the reason why the access to a server should be denied
+	AuthTLSError string `json:"authTLSError,omitempty"`
 }
 
 // Location describes an URI inside a server.
@@ -205,7 +212,7 @@ type Location struct {
 	// Denied returns an error when this location cannot not be allowed
 	// Requesting a denied location should return HTTP code 403.
 	Denied error `json:"denied,omitempty"`
-	// CorsConfig returns the Cors Configration for the ingress rule
+	// CorsConfig returns the Cors Configuration for the ingress rule
 	// +optional
 	CorsConfig cors.Config `json:"corsConfig,omitempty"`
 	// ExternalAuth indicates the access to this location requires
@@ -241,7 +248,7 @@ type Location struct {
 	// ConfigurationSnippet contains additional configuration for the backend
 	// to be considered in the configuration of the location
 	ConfigurationSnippet string `json:"configurationSnippet"`
-	// Connection contains connection header to orverride the default Connection header
+	// Connection contains connection header to override the default Connection header
 	// to the request.
 	// +optional
 	Connection connection.Config `json:"connection"`
@@ -256,6 +263,14 @@ type Location struct {
 	// original location.
 	// +optional
 	XForwardedPrefix bool `json:"xForwardedPrefix,omitempty"`
+	// Logs allows to enable or disable the nginx logs
+	// By default access logs are enabled and rewrite logs are disabled
+	Logs log.Config `json:"logs,omitempty"`
+	// GRPC indicates if the kubernetes service exposes a gRPC interface
+	// By default this is false
+	GRPC bool `json:"grpc"`
+	// LuaRestyWAF contains parameters to configure lua-resty-waf
+	LuaRestyWAF luarestywaf.Config `json:"luaRestyWAF"`
 }
 
 // SSLPassthroughBackend describes a SSL upstream server configured
@@ -263,7 +278,7 @@ type Location struct {
 // The endpoints must provide the TLS termination exposing the required SSL certificate.
 // The ingress controller only pipes the underlying TCP connection
 type SSLPassthroughBackend struct {
-	Service *apiv1.Service     `json:"service,omitEmpty"`
+	Service *apiv1.Service     `json:"service,omitempty"`
 	Port    intstr.IntOrString `json:"port"`
 	// Backend describes the endpoints to use.
 	Backend string `json:"namespace,omitempty"`
@@ -278,7 +293,7 @@ type L4Service struct {
 	// Backend of the service
 	Backend L4Backend `json:"backend"`
 	// Endpoints active endpoints of the service
-	Endpoints []Endpoint `json:"endpoins,omitEmpty"`
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
 }
 
 // L4Backend describes the kubernetes service behind L4 Ingress service
