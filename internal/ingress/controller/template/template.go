@@ -17,6 +17,7 @@ limitations under the License.
 package template
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -118,33 +119,39 @@ var (
 			}
 			return true
 		},
-		"buildLocation":            buildLocation,
-		"buildAuthLocation":        buildAuthLocation,
-		"buildAuthResponseHeaders": buildAuthResponseHeaders,
-		"buildProxyPass":           buildProxyPass,
-		"filterRateLimits":         filterRateLimits,
-		"buildRateLimitZones":      buildRateLimitZones,
-		"buildRateLimit":           buildRateLimit,
-		"buildResolvers":           buildResolvers,
-		"buildUpstreamName":        buildUpstreamName,
-		"isLocationAllowed":        isLocationAllowed,
-		"buildLogFormatUpstream":   buildLogFormatUpstream,
-		"buildDenyVariable":        buildDenyVariable,
-		"getenv":                   os.Getenv,
-		"contains":                 strings.Contains,
-		"hasPrefix":                strings.HasPrefix,
-		"hasSuffix":                strings.HasSuffix,
-		"toUpper":                  strings.ToUpper,
-		"toLower":                  strings.ToLower,
-		"formatIP":                 formatIP,
-		"buildNextUpstream":        buildNextUpstream,
-		"getIngressInformation":    getIngressInformation,
+		"shouldConfigureLuaRestyWAF": shouldConfigureLuaRestyWAF,
+		"buildLuaSharedDictionaries": buildLuaSharedDictionaries,
+		"buildLocation":              buildLocation,
+		"buildAuthLocation":          buildAuthLocation,
+		"buildAuthResponseHeaders":   buildAuthResponseHeaders,
+		"buildLoadBalancingConfig":   buildLoadBalancingConfig,
+		"buildProxyPass":             buildProxyPass,
+		"filterRateLimits":           filterRateLimits,
+		"buildRateLimitZones":        buildRateLimitZones,
+		"buildRateLimit":             buildRateLimit,
+		"buildResolvers":             buildResolvers,
+		"buildUpstreamName":          buildUpstreamName,
+		"isLocationInLocationList":   isLocationInLocationList,
+		"isLocationAllowed":          isLocationAllowed,
+		"buildLogFormatUpstream":     buildLogFormatUpstream,
+		"buildDenyVariable":          buildDenyVariable,
+		"getenv":                     os.Getenv,
+		"contains":                   strings.Contains,
+		"hasPrefix":                  strings.HasPrefix,
+		"hasSuffix":                  strings.HasSuffix,
+		"toUpper":                    strings.ToUpper,
+		"toLower":                    strings.ToLower,
+		"formatIP":                   formatIP,
+		"buildNextUpstream":          buildNextUpstream,
+		"getIngressInformation":      getIngressInformation,
 		"serverConfig": func(all config.TemplateConfig, server *ingress.Server) interface{} {
 			return struct{ First, Second interface{} }{all, server}
 		},
 		"isValidClientBodyBufferSize": isValidClientBodyBufferSize,
 		"buildForwardedFor":           buildForwardedFor,
 		"buildAuthSignURL":            buildAuthSignURL,
+		"buildOpentracingLoad":        buildOpentracingLoad,
+		"buildOpentracing":            buildOpentracing,
 	}
 )
 
@@ -162,12 +169,66 @@ func formatIP(input string) string {
 	return fmt.Sprintf("[%s]", input)
 }
 
-// buildResolvers returns the resolvers reading the /etc/resolv.conf file
-func buildResolvers(input interface{}) string {
-	// NGINX need IPV6 addresses to be surrounded by brackets
-	nss, ok := input.([]net.IP)
+func shouldConfigureLuaRestyWAF(disableLuaRestyWAF bool, mode string) bool {
+	if !disableLuaRestyWAF && len(mode) > 0 {
+		return true
+	}
+
+	return false
+}
+
+func buildLuaSharedDictionaries(s interface{}, dynamicConfigurationEnabled bool, disableLuaRestyWAF bool) string {
+	servers, ok := s.([]*ingress.Server)
 	if !ok {
-		glog.Errorf("expected a '[]net.IP' type but %T was returned", input)
+		glog.Errorf("expected an '[]*ingress.Server' type but %T was returned", s)
+		return ""
+	}
+
+	out := []string{}
+
+	if dynamicConfigurationEnabled {
+		out = append(out,
+			"lua_shared_dict configuration_data 5M",
+			"lua_shared_dict locks 512k",
+			"lua_shared_dict balancer_ewma 1M",
+			"lua_shared_dict balancer_ewma_last_touched_at 1M",
+			"lua_shared_dict sticky_sessions 1M",
+		)
+	}
+
+	if !disableLuaRestyWAF {
+		luaRestyWAFEnabled := func() bool {
+			for _, server := range servers {
+				for _, location := range server.Locations {
+					if len(location.LuaRestyWAF.Mode) > 0 {
+						return true
+					}
+				}
+			}
+			return false
+		}()
+		if luaRestyWAFEnabled {
+			out = append(out, "lua_shared_dict waf_storage 64M")
+		}
+	}
+
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, ";\n\r") + ";"
+}
+
+// buildResolvers returns the resolvers reading the /etc/resolv.conf file
+func buildResolvers(res interface{}, disableIpv6 interface{}) string {
+	// NGINX need IPV6 addresses to be surrounded by brackets
+	nss, ok := res.([]net.IP)
+	if !ok {
+		glog.Errorf("expected a '[]net.IP' type but %T was returned", res)
+		return ""
+	}
+	no6, ok := disableIpv6.(bool)
+	if !ok {
+		glog.Errorf("expected a 'bool' type but %T was returned", disableIpv6)
 		return ""
 	}
 
@@ -178,14 +239,21 @@ func buildResolvers(input interface{}) string {
 	r := []string{"resolver"}
 	for _, ns := range nss {
 		if ing_net.IsIPV6(ns) {
+			if no6 {
+				continue
+			}
 			r = append(r, fmt.Sprintf("[%v]", ns))
 		} else {
 			r = append(r, fmt.Sprintf("%v", ns))
 		}
 	}
-	r = append(r, "valid=30s;")
+	r = append(r, "valid=30s")
 
-	return strings.Join(r, " ")
+	if no6 {
+		r = append(r, "ipv6=off")
+	}
+
+	return strings.Join(r, " ") + ";"
 }
 
 // buildLocation produces the location string, if the ingress has redirects
@@ -262,11 +330,36 @@ func buildLogFormatUpstream(input interface{}) string {
 	return cfg.BuildLogFormatUpstream()
 }
 
+func buildLoadBalancingConfig(b interface{}, fallbackLoadBalancing string) string {
+	backend, ok := b.(*ingress.Backend)
+	if !ok {
+		glog.Errorf("expected an '*ingress.Backend' type but %T was returned", b)
+		return ""
+	}
+
+	if backend.UpstreamHashBy != "" {
+		return fmt.Sprintf("hash %s consistent;", backend.UpstreamHashBy)
+	}
+
+	if backend.LoadBalancing != "" {
+		if backend.LoadBalancing == "round_robin" {
+			return ""
+		}
+		return fmt.Sprintf("%s;", backend.LoadBalancing)
+	}
+
+	if fallbackLoadBalancing == "round_robin" {
+		return ""
+	}
+
+	return fmt.Sprintf("%s;", fallbackLoadBalancing)
+}
+
 // buildProxyPass produces the proxy pass string, if the ingress has redirects
 // (specified through the nginx.ingress.kubernetes.io/rewrite-to annotation)
 // If the annotation nginx.ingress.kubernetes.io/add-base-url:"true" is specified it will
 // add a base tag in the head of the response from the service
-func buildProxyPass(host string, b interface{}, loc interface{}) string {
+func buildProxyPass(host string, b interface{}, loc interface{}, dynamicConfigurationEnabled bool) string {
 	backends, ok := b.([]*ingress.Backend)
 	if !ok {
 		glog.Errorf("expected an '[]*ingress.Backend' type but %T was returned", b)
@@ -282,14 +375,28 @@ func buildProxyPass(host string, b interface{}, loc interface{}) string {
 	path := location.Path
 	proto := "http"
 
-	upstreamName := location.Backend
+	proxyPass := "proxy_pass"
+	if location.GRPC {
+		proxyPass = "grpc_pass"
+		proto = "grpc"
+	}
+
+	upstreamName := "upstream_balancer"
+
+	if !dynamicConfigurationEnabled {
+		upstreamName = location.Backend
+	}
+
 	for _, backend := range backends {
 		if backend.Name == location.Backend {
 			if backend.Secure || backend.SSLPassthrough {
 				proto = "https"
+				if location.GRPC {
+					proto = "grpcs"
+				}
 			}
 
-			if isSticky(host, location, backend.SessionAffinity.CookieSessionAffinity.Locations) {
+			if !dynamicConfigurationEnabled && isSticky(host, location, backend.SessionAffinity.CookieSessionAffinity.Locations) {
 				upstreamName = fmt.Sprintf("sticky-%v", upstreamName)
 			}
 
@@ -298,7 +405,8 @@ func buildProxyPass(host string, b interface{}, loc interface{}) string {
 	}
 
 	// defProxyPass returns the default proxy_pass, just the name of the upstream
-	defProxyPass := fmt.Sprintf("proxy_pass %s://%s;", proto, upstreamName)
+	defProxyPass := fmt.Sprintf("%v %s://%s;", proxyPass, proto, upstreamName)
+
 	// if the path in the ingress rule is equals to the target: no special rewrite
 	if path == location.Rewrite.Target {
 		return defProxyPass
@@ -309,39 +417,43 @@ func buildProxyPass(host string, b interface{}, loc interface{}) string {
 	}
 
 	if len(location.Rewrite.Target) > 0 {
-		abu := ""
+		var abu string
+		var xForwardedPrefix string
+
 		if location.Rewrite.AddBaseURL {
 			// path has a slash suffix, so that it can be connected with baseuri directly
-			bPath := fmt.Sprintf("%s%s", path, "$baseuri")
+			bPath := fmt.Sprintf("%s$escaped_base_uri", path)
 			regex := `(<(?:H|h)(?:E|e)(?:A|a)(?:D|d)(?:[^">]|"[^"]*")*>)`
+			scheme := "$scheme"
+
 			if len(location.Rewrite.BaseURLScheme) > 0 {
-				abu = fmt.Sprintf(`subs_filter '%v' '$1<base href="%v://$http_host%v">' ro;
-	    `, regex, location.Rewrite.BaseURLScheme, bPath)
-			} else {
-				abu = fmt.Sprintf(`subs_filter '%v' '$1<base href="$scheme://$http_host%v">' ro;
-	    `, regex, bPath)
+				scheme = location.Rewrite.BaseURLScheme
 			}
+
+			abu = fmt.Sprintf(`
+set_escape_uri $escaped_base_uri $baseuri;
+subs_filter '%v' '$1<base href="%v://$http_host%v">' ro;
+`, regex, scheme, bPath)
 		}
 
-		xForwardedPrefix := ""
 		if location.XForwardedPrefix {
-			xForwardedPrefix = fmt.Sprintf(`proxy_set_header X-Forwarded-Prefix "%s";
-	    `, path)
+			xForwardedPrefix = fmt.Sprintf("proxy_set_header X-Forwarded-Prefix \"%s\";\n", path)
 		}
+
 		if location.Rewrite.Target == slash {
 			// special case redirect to /
 			// ie /something to /
 			return fmt.Sprintf(`
-	    rewrite %s(.*) /$1 break;
-	    rewrite %s / break;
-	    %vproxy_pass %s://%s;
-	    %v`, path, location.Path, xForwardedPrefix, proto, upstreamName, abu)
+rewrite %s(.*) /$1 break;
+rewrite %s / break;
+%v%v %s://%s;
+%v`, path, location.Path, xForwardedPrefix, proxyPass, proto, upstreamName, abu)
 		}
 
 		return fmt.Sprintf(`
-	    rewrite %s(.*) %s/$1 break;
-	    %vproxy_pass %s://%s;
-	    %v`, path, location.Rewrite.Target, xForwardedPrefix, proto, upstreamName, abu)
+rewrite %s(.*) %s/$1 break;
+%v%v %s://%s;
+%v`, path, location.Rewrite.Target, xForwardedPrefix, proxyPass, proto, upstreamName, abu)
 	}
 
 	// default proxy_pass
@@ -466,6 +578,28 @@ func buildRateLimit(input interface{}) []string {
 	return limits
 }
 
+func isLocationInLocationList(location interface{}, rawLocationList string) bool {
+	loc, ok := location.(*ingress.Location)
+	if !ok {
+		glog.Errorf("expected an '*ingress.Location' type but %T was returned", location)
+		return false
+	}
+
+	locationList := strings.Split(rawLocationList, ",")
+
+	for _, locationListItem := range locationList {
+		locationListItem = strings.Trim(locationListItem, " ")
+		if locationListItem == "" {
+			continue
+		}
+		if strings.HasPrefix(loc.Path, locationListItem) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func isLocationAllowed(input interface{}) bool {
 	loc, ok := input.(*ingress.Location)
 	if !ok {
@@ -499,8 +633,7 @@ func buildDenyVariable(a interface{}) string {
 	return fmt.Sprintf("$deny_%v", denyPathSlugMap[l])
 }
 
-// TODO: Needs Unit Tests
-func buildUpstreamName(host string, b interface{}, loc interface{}) string {
+func buildUpstreamName(host string, b interface{}, loc interface{}, dynamicConfigurationEnabled bool) string {
 
 	backends, ok := b.([]*ingress.Backend)
 	if !ok {
@@ -516,14 +649,16 @@ func buildUpstreamName(host string, b interface{}, loc interface{}) string {
 
 	upstreamName := location.Backend
 
-	for _, backend := range backends {
-		if backend.Name == location.Backend {
-			if backend.SessionAffinity.AffinityType == "cookie" &&
-				isSticky(host, location, backend.SessionAffinity.CookieSessionAffinity.Locations) {
-				upstreamName = fmt.Sprintf("sticky-%v", upstreamName)
-			}
+	if !dynamicConfigurationEnabled {
+		for _, backend := range backends {
+			if backend.Name == location.Backend {
+				if backend.SessionAffinity.AffinityType == "cookie" &&
+					isSticky(host, location, backend.SessionAffinity.CookieSessionAffinity.Locations) {
+					upstreamName = fmt.Sprintf("sticky-%v", upstreamName)
+				}
 
-			break
+				break
+			}
 		}
 	}
 
@@ -701,4 +836,62 @@ func randomString() string {
 	}
 
 	return string(b)
+}
+
+func buildOpentracingLoad(input interface{}) string {
+	cfg, ok := input.(config.Configuration)
+	if !ok {
+		glog.Errorf("expected a 'config.Configuration' type but %T was returned", input)
+		return ""
+	}
+
+	if !cfg.EnableOpentracing {
+		return ""
+	}
+
+	buf := bytes.NewBufferString("load_module /etc/nginx/modules/ngx_http_opentracing_module.so;")
+	buf.WriteString("\r\n")
+
+	if cfg.ZipkinCollectorHost != "" {
+		buf.WriteString("load_module /etc/nginx/modules/ngx_http_zipkin_module.so;")
+	} else if cfg.JaegerCollectorHost != "" {
+		buf.WriteString("load_module /etc/nginx/modules/ngx_http_jaeger_module.so;")
+	}
+
+	buf.WriteString("\r\n")
+
+	return buf.String()
+}
+
+func buildOpentracing(input interface{}) string {
+	cfg, ok := input.(config.Configuration)
+	if !ok {
+		glog.Errorf("expected a 'config.Configuration' type but %T was returned", input)
+		return ""
+	}
+
+	if !cfg.EnableOpentracing {
+		return ""
+	}
+
+	buf := bytes.NewBufferString("")
+
+	if cfg.ZipkinCollectorHost != "" {
+		buf.WriteString(fmt.Sprintf("zipkin_collector_host                   %v;", cfg.ZipkinCollectorHost))
+		buf.WriteString("\r\n")
+		buf.WriteString(fmt.Sprintf("zipkin_collector_port                   %v;", cfg.ZipkinCollectorPort))
+		buf.WriteString("\r\n")
+		buf.WriteString(fmt.Sprintf("zipkin_service_name                     %v;", cfg.ZipkinServiceName))
+	} else if cfg.JaegerCollectorHost != "" {
+		buf.WriteString(fmt.Sprintf("jaeger_reporter_local_agent_host_port   %v:%v;", cfg.JaegerCollectorHost, cfg.JaegerCollectorPort))
+		buf.WriteString("\r\n")
+		buf.WriteString(fmt.Sprintf("jaeger_service_name                     %v;", cfg.JaegerServiceName))
+		buf.WriteString("\r\n")
+		buf.WriteString(fmt.Sprintf("jaeger_sampler_type                     %v;", cfg.JaegerSamplerType))
+		buf.WriteString("\r\n")
+		buf.WriteString(fmt.Sprintf("jaeger_sampler_param                    %v;", cfg.JaegerSamplerParam))
+	}
+
+	buf.WriteString("\r\n")
+	return buf.String()
 }

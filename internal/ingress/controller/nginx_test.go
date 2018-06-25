@@ -16,7 +16,156 @@ limitations under the License.
 
 package controller
 
-import "testing"
+import (
+	"io"
+	"io/ioutil"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/ingress-nginx/internal/ingress"
+)
+
+func TestIsDynamicConfigurationEnough(t *testing.T) {
+	backends := []*ingress.Backend{{
+		Name: "fakenamespace-myapp-80",
+		Endpoints: []ingress.Endpoint{
+			{
+				Address: "10.0.0.1",
+				Port:    "8080",
+			},
+			{
+				Address: "10.0.0.2",
+				Port:    "8080",
+			},
+		},
+	}}
+
+	servers := []*ingress.Server{{
+		Hostname: "myapp.fake",
+		Locations: []*ingress.Location{
+			{
+				Path:    "/",
+				Backend: "fakenamespace-myapp-80",
+			},
+		},
+	}}
+
+	commonConfig := &ingress.Configuration{
+		Backends: backends,
+		Servers:  servers,
+	}
+
+	n := &NGINXController{
+		runningConfig: &ingress.Configuration{
+			Backends: backends,
+			Servers:  servers,
+		},
+	}
+
+	newConfig := commonConfig
+	if !n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("When new config is same as the running config it should be deemed as dynamically configurable")
+	}
+
+	newConfig = &ingress.Configuration{
+		Backends: []*ingress.Backend{{Name: "another-backend-8081"}},
+		Servers:  []*ingress.Server{{Hostname: "myapp1.fake"}},
+	}
+	if n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("Expected to not be dynamically configurable when there's more than just backends change")
+	}
+
+	newConfig = &ingress.Configuration{
+		Backends: []*ingress.Backend{{Name: "a-backend-8080"}},
+		Servers:  servers,
+	}
+	if !n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("Expected to be dynamically configurable when only backends change")
+	}
+
+	if !n.runningConfig.Equal(commonConfig) {
+		t.Errorf("Expected running config to not change")
+	}
+
+	if !newConfig.Equal(&ingress.Configuration{Backends: []*ingress.Backend{{Name: "a-backend-8080"}}, Servers: servers}) {
+		t.Errorf("Expected new config to not change")
+	}
+}
+
+func TestConfigureDynamically(t *testing.T) {
+	target := &apiv1.ObjectReference{}
+
+	backends := []*ingress.Backend{{
+		Name:    "fakenamespace-myapp-80",
+		Service: &apiv1.Service{},
+		Endpoints: []ingress.Endpoint{
+			{
+				Address: "10.0.0.1",
+				Port:    "8080",
+				Target:  target,
+			},
+			{
+				Address: "10.0.0.2",
+				Port:    "8080",
+				Target:  target,
+			},
+		},
+	}}
+
+	servers := []*ingress.Server{{
+		Hostname: "myapp.fake",
+		Locations: []*ingress.Location{
+			{
+				Path:    "/",
+				Backend: "fakenamespace-myapp-80",
+				Service: &apiv1.Service{},
+			},
+		},
+	}}
+
+	commonConfig := &ingress.Configuration{
+		Backends: backends,
+		Servers:  servers,
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+
+		if r.Method != "POST" {
+			t.Errorf("expected a 'POST' request, got '%s'", r.Method)
+		}
+
+		b, err := ioutil.ReadAll(r.Body)
+		if err != nil && err != io.EOF {
+			t.Fatal(err)
+		}
+		body := string(b)
+		if strings.Index(body, "target") != -1 {
+			t.Errorf("unexpected target reference in JSON content: %v", body)
+		}
+
+		if strings.Index(body, "service") != -1 {
+			t.Errorf("unexpected service reference in JSON content: %v", body)
+		}
+
+	}))
+
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
+	defer ts.Close()
+
+	err := configureDynamically(commonConfig, port)
+	if err != nil {
+		t.Errorf("unexpected error posting dynamic configuration: %v", err)
+	}
+
+	if commonConfig.Backends[0].Endpoints[0].Target != target {
+		t.Errorf("unexpected change in the configuration object after configureDynamically invocation")
+	}
+}
 
 func TestNginxHashBucketSize(t *testing.T) {
 	tests := []struct {

@@ -17,8 +17,8 @@ FROM BASEIMAGE
 
 CROSS_BUILD_COPY qemu-ARCH-static /usr/bin/
 
-COPY build.sh /
 COPY gladly_patches/ /gladly_patches
+COPY build.sh install_lua_resty_waf.sh /
 
 RUN clean-install bash
 
