@@ -2,6 +2,54 @@
 
 ---
 
+# Gladly Fork
+
+### Purpose of the fork
+
+We forked the upstream repo to apply the following patch to nginx: http://mailman.nginx.org/pipermail/nginx-devel/2018-January/010761.html
+
+### How to build
+
+The fork hardcodes a few environment variables that can be changed in the upstream, including:
+```
+DOCKER     # we're only going to use docker
+REGISTRY   # we're only going to use our own registry - 'sagan'
+BASEIMAGE  # fixed to our base nginx image - sagan/gladly-nginx
+```
+
+### Directory Structure - IMPORTANT
+
+This repo *must* be cloned into a directory structure like the following:
+```
+${GOROOT}/src/github.com/sagansystems/io.k8s.ingress-nginx/src/k8s.io
+```
+
+### Building the container
+
+We deploy a container called `sagan/nginx-ingress-controller` - https://hub.docker.com/r/sagan/nginx-ingress-controller/
+
+To build this container:
+```
+- clone repo (SEE ABOVE)
+- cd images/nginx
+- make container
+- cd ../..
+- make container
+```
+
+### Updating the fork
+
+Find a release to update to here: https://github.com/kubernetes/ingress-nginx/releases
+
+```
+ingress-nginx> git checkout -b merge-upstream-x.y.x
+ingress-nginx> git merge nginx-x.y.z
+<resolve conflicts>
+<push>
+```
+
+---
+
 # NGINX Ingress Controller
 
 [![Build Status](https://travis-ci.org/kubernetes/ingress-nginx.svg?branch=master)](https://travis-ci.org/kubernetes/ingress-nginx)
